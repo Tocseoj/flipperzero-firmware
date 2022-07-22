@@ -24,6 +24,7 @@
 - `notification`        - Notification service 
 - `power`               - Power service
 - `power_observer`      - Power debug tool
+- `qr`                  - Displays short strings as QR codes
 - `rpc`                 - RPC service and API
 - `scened_app_example`  - C++ application example
 - `snake_game`          - Snake game application

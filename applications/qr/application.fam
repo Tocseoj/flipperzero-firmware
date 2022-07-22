@@ -1,0 +1,10 @@
+App(
+    appid="qr",
+    name="QR Code Displayer",
+    apptype=FlipperAppType.PLUGIN,
+    entry_point="qr_code_displayer",
+    cdefines=["QR_CODE_DISPLAYER"],
+    requires=["gui"],
+    stack_size=1 * 1024,
+    order=40,
+)

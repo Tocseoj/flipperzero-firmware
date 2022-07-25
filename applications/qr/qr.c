@@ -80,23 +80,30 @@ osStatus_t qr_code_displayer(void* p) {
     for(bool processing = true; processing;) {
         osStatus_t event_status = osMessageQueueGet(event_queue, &input_event, NULL, 100);
 
-        // get state mutex here
-        QrState* qr_state = (QrState*)acquire_mutex_block(&state_mutex);
-
         if(event_status == osOK) {
             // key press events
-            if(input_event.key == InputKeyOk 
-                && input_event.type == InputTypeRepeat) 
+            if(input_event.type == InputTypePress 
+                && input_event.key == InputKeyBack) 
             {
+                processing = false;
+            }
+            else if(input_event.type == InputTypeRepeat
+                && input_event.key == InputKeyOk) 
+            {
+                // get state mutex here
+                QrState* qr_state = (QrState*)acquire_mutex_block(&state_mutex);
+
                 qr_state->counter = input_event.sequence;
+
+                // release state mutex
+                release_mutex(&state_mutex, qr_state);
+
+                // Redraw since state changed
                 view_port_update(view_port);
             }
         } else {
             // event timeout
         }
-
-        // release state mutex
-        release_mutex(&state_mutex, qr_state);
     }
 
     view_port_enabled_set(view_port, false);

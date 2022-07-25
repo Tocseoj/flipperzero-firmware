@@ -30,7 +30,7 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     canvas_draw_str(canvas, 37, 31, "Testing...");
     // Print an integer as a string
     char count_buffer[7 + 2]; // len("Count: ") == 7 so max counter value displayed will be 99
-    snprintf(count_buffer, sizeof(count_buffer), "Count: %u", qr_state->counter);
+    snprintf(count_buffer, sizeof(count_buffer), "Count: %lu", qr_state->counter);
     canvas_draw_str(canvas, 37, 41, count_buffer);
 
     // release state mutex
@@ -40,7 +40,7 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
 static void qr_input(InputEvent* input_event, osMessageQueueId_t event_queue) {
     furi_assert(event_queue);
 
-    osMessageQueuePut(event_queue, &input_event, 0, osKernelSysTickMicroSec(500));
+    osMessageQueuePut(event_queue, &input_event, 0, osWaitForever);
 }
 
 osStatus_t qr_code_displayer(void* p) {

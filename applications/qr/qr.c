@@ -3,8 +3,46 @@
 #include <input/input.h>
 #include <stdlib.h>
 
+typedef enum {
+    QrVersionUnspecified,
+    QrVersion1, // 21x21
+    QrVersion2, // unsupported
+    QrVersion3, // unsupported
+    QrVersion4, // unsupported
+    QrVersion5, // unsupported
+    QrVersion6, // unsupported
+    QrVersion7, // unsupported
+    QrVersion8, // unsupported
+    QrVersion9, // unsupported
+    QrVersion10, // unsupported
+    QrVersion11, // unsupported
+} QrVersion;
+
+// Error correction level
+typedef enum {
+    QrCorrectionLevelUnspecified,
+    QrCorrectionLevelL, // unsupported
+    QrCorrectionLevelM, // unsupported
+    QrCorrectionLevelQ, // unsupported
+    QrCorrectionLevelH, // Highest level of error correction
+} QrCorrectionLevel;
+
+typedef enum {
+    QrModeUnspecified,
+    QrModeNumeric, // unsupported
+    QrModeAlphaNum, // 0–9, A–Z (upper-case only), space, $, %, *, +, -, ., /, :
+    QrModeBinary, // unsupported
+    QrModeKanji, // unsupported
+} QrMode;
+
+#define MAX_ALPHANUM_LEN 468
 typedef struct {
-    uint32_t counter;
+    uint32_t counter; // testing value
+    QrVersion version;
+    QrCorrectionLevel level;
+    QrMode mode;
+    char data[MAX_ALPHANUM_LEN + 1];
+    uint16_t len;
 } QrState;
 
 typedef struct {
@@ -32,11 +70,22 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     const QrState* qr_state = (QrState*)acquire_mutex_block((ValueMutex*)ctx);
 
     // Printing a constant string value
-    canvas_draw_str(canvas, 37, 31, "Testing...");
+    canvas_draw_str_aligned(canvas, 128, 0, AlignRight, AlignTop, "Testing...");
     // Print an integer as a string
     char count_buffer[7 + 2 + 1]; // "Count: " + 2 digits + \0
-    snprintf(count_buffer, sizeof(count_buffer), "Count: %lu", qr_state->counter);
-    canvas_draw_str(canvas, 37, 41, count_buffer);
+    snprintf(count_buffer, sizeof(count_buffer), "Count: %02lu", qr_state->counter % 100);
+    canvas_draw_str_aligned(canvas, 128, 10, AlignRight, AlignTop, count_buffer);
+
+    if(qr_state->version == QrVersion1) {
+        // QR Code
+        for(uint16_t i = 0; i < 21; i++) {
+            for(uint16_t j = 0; j < 21; j++) {
+                if((j + i) % 2 == 0) {
+                    canvas_draw_box(canvas, i*3, j*3, 3, 3);
+                }
+            }
+        }
+    }
 
     // release state mutex
     release_mutex((ValueMutex*)ctx, qr_state);
@@ -52,7 +101,7 @@ static void qr_input(InputEvent* input_event, osMessageQueueId_t event_queue) {
     furi_assert(event_queue);
 
     QrEvent qr_event = {.type = input_event->type, .key = input_event->key};
-    osMessageQueuePut(event_queue, (QrEvent*)&qr_event, 0, osWaitForever);
+    osMessageQueuePut(event_queue, &qr_event, 0, osWaitForever);
 }
 
 int32_t qr_code_displayer(void* p) {
@@ -60,7 +109,7 @@ int32_t qr_code_displayer(void* p) {
     UNUSED(p);
 
     // setup event queue
-    osMessageQueueId_t event_queue = osMessageQueueNew(8, sizeof(InputEvent), NULL);
+    osMessageQueueId_t event_queue = osMessageQueueNew(8, sizeof(QrEvent), NULL);
 
     // variable to track plugin state
     QrState* qr_state = (QrState*)malloc(sizeof(QrState));
@@ -68,7 +117,15 @@ int32_t qr_code_displayer(void* p) {
         // Memory allocation failed!
         return 255; // should be osMemoryError
     }
+
+    // Initialize state
     qr_state->counter = 0;
+    qr_state->version = QrVersion1;
+    qr_state->level = QrCorrectionLevelH;
+    qr_state->mode = QrModeAlphaNum;
+    strncpy(qr_state->data, "MIP100609", 10);
+    qr_state->len = 9;
+    
     // setup mutex for locking state in callbacks
     ValueMutex state_mutex;
     if(!init_mutex(&state_mutex, qr_state, sizeof(QrState))) {
@@ -86,13 +143,13 @@ int32_t qr_code_displayer(void* p) {
     Gui* gui = furi_record_open("gui");
     gui_add_view_port(gui, view_port, GuiLayerFullscreen);
 
-    QrEvent qr_event;
+    QrEvent event;
     for(bool processing = true; processing;) {
         // We can wait forever since our app only changes on input
-        osStatus_t event_status = osMessageQueueGet(event_queue, &qr_event, NULL, osWaitForever);
+        osStatus_t event_status = osMessageQueueGet(event_queue, &event, NULL, osWaitForever);
 
         if(event_status == osOK) {
-            if(qr_event.key == InputKeyBack) {
+            if(event.key == InputKeyBack) {
                 // Quit if back is pressed
                 processing = false;
             } else {
@@ -100,7 +157,7 @@ int32_t qr_code_displayer(void* p) {
                 QrState* qr_state = (QrState*)acquire_mutex_block(&state_mutex);
 
                 // update state
-                switch (qr_event.type)
+                switch (event.type)
                 {
                 case InputTypePress:
                     qr_state->counter = 1;

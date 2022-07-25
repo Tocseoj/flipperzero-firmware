@@ -3,8 +3,8 @@
 #include <input/input.h>
 #include <stdlib.h>
 
-typedef enum {
-    uint32_t counter,
+typedef struct {
+    uint32_t counter;
 } QrState;
 
 /**
@@ -31,7 +31,7 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     // Print an integer as a string
     char count_buffer[7 + 2]; // len("Count: ") == 7 so max counter value displayed will be 99
     snprintf(count_buffer, sizeof(count_buffer), "Count: %u", qr_state->counter);
-    canvas_draw_str(canvas, 37, 41, count_buffer)
+    canvas_draw_str(canvas, 37, 41, count_buffer);
 
     // release state mutex
     release_mutex((ValueMutex*)ctx, qr_state);
@@ -88,7 +88,7 @@ osStatus_t qr_code_displayer(void* p) {
             if(input_event.key == InputKeyOk 
                 && input_event.type == InputTypeRepeat) 
             {
-                qr_state->counter = input_event.sequence
+                qr_state->counter = input_event.sequence;
                 view_port_update(view_port);
             }
         } else {

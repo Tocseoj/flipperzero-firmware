@@ -7,8 +7,13 @@ typedef struct {
     uint32_t counter;
 } QrState;
 
+typedef struct {
+    InputKey key;
+    InputType type;
+} QrEvent;
+
 /**
- * @brief Updates whay is drawn to display when view_port_update is called
+ * @brief Updates what is drawn to display when view_port_update is called
  * 
  * Some defined constants
  * #define GUI_DISPLAY_WIDTH 128
@@ -29,7 +34,7 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     // Printing a constant string value
     canvas_draw_str(canvas, 37, 31, "Testing...");
     // Print an integer as a string
-    char count_buffer[7 + 2]; // len("Count: ") == 7 so max counter value displayed will be 99
+    char count_buffer[7 + 2 + 1]; // "Count: " + 2 digits + \0
     snprintf(count_buffer, sizeof(count_buffer), "Count: %lu", qr_state->counter);
     canvas_draw_str(canvas, 37, 41, count_buffer);
 
@@ -37,17 +42,22 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     release_mutex((ValueMutex*)ctx, qr_state);
 }
 
+/**
+ * @brief Handles hardware button events (pressing a key)
+ * 
+ * @param input_event interrupt event from os 
+ * @param event_queue context object that will handle the input
+ */
 static void qr_input(InputEvent* input_event, osMessageQueueId_t event_queue) {
     furi_assert(event_queue);
 
-    osMessageQueuePut(event_queue, &input_event, 0, osWaitForever);
+    QrEvent qr_event = {.type = input_event->type, .key = input_event->key};
+    osMessageQueuePut(event_queue, (QrEvent*)&qr_event, 0, osWaitForever);
 }
 
-osStatus_t qr_code_displayer(void* p) {
+int32_t qr_code_displayer(void* p) {
     // unknown
     UNUSED(p);
-    // seed for random numbers
-    srand(DWT->CYCCNT);
 
     // setup event queue
     osMessageQueueId_t event_queue = osMessageQueueNew(8, sizeof(InputEvent), NULL);
@@ -56,7 +66,7 @@ osStatus_t qr_code_displayer(void* p) {
     QrState* qr_state = (QrState*)malloc(sizeof(QrState));
     if(qr_state == NULL) {
         // Memory allocation failed!
-        return osErrorNoMemory;
+        return 255; // should be osMemoryError
     }
     qr_state->counter = 0;
     // setup mutex for locking state in callbacks
@@ -64,7 +74,7 @@ osStatus_t qr_code_displayer(void* p) {
     if(!init_mutex(&state_mutex, qr_state, sizeof(QrState))) {
         FURI_LOG_E("QrCodeDisplayer", "cannot create mutex\r\n");
         free(qr_state);
-        return osError;
+        return 255; // osError
     }
 
     // setup view port with functions called on draw and hardware inputs
@@ -76,24 +86,36 @@ osStatus_t qr_code_displayer(void* p) {
     Gui* gui = furi_record_open("gui");
     gui_add_view_port(gui, view_port, GuiLayerFullscreen);
 
-    InputEvent input_event;
+    QrEvent qr_event;
     for(bool processing = true; processing;) {
-        osStatus_t event_status = osMessageQueueGet(event_queue, &input_event, NULL, 100);
+        // We can wait forever since our app only changes on input
+        osStatus_t event_status = osMessageQueueGet(event_queue, &qr_event, NULL, osWaitForever);
 
         if(event_status == osOK) {
-            // key press events
-            if(input_event.type == InputTypePress 
-                && input_event.key == InputKeyBack) 
-            {
+            if(qr_event.key == InputKeyBack) {
+                // Quit if back is pressed
                 processing = false;
-            }
-            else if(input_event.type == InputTypeRepeat
-                && input_event.key == InputKeyOk) 
-            {
+            } else {
                 // get state mutex here
                 QrState* qr_state = (QrState*)acquire_mutex_block(&state_mutex);
 
-                qr_state->counter = input_event.sequence;
+                // update state
+                switch (qr_event.type)
+                {
+                case InputTypePress:
+                    qr_state->counter = 1;
+                    break;
+                case InputTypeRepeat:
+                    qr_state->counter++;
+                    break;
+                case InputTypeRelease:
+                    qr_state->counter = 0;
+                    break;
+                case InputTypeShort:
+                    break;
+                case InputTypeLong:
+                    break;
+                }
 
                 // release state mutex
                 release_mutex(&state_mutex, qr_state);
@@ -101,8 +123,11 @@ osStatus_t qr_code_displayer(void* p) {
                 // Redraw since state changed
                 view_port_update(view_port);
             }
+        } else if (event_status == osErrorTimeout) {
+            // shouldn't timeout because we have no reason to not wait forever
         } else {
-            // event timeout
+            FURI_LOG_E("QrCodeDisplayer", "got osError(%lu) from osMessageQueueGet\r\n", event_status);
+            processing = false;
         }
     }
 
@@ -115,5 +140,5 @@ osStatus_t qr_code_displayer(void* p) {
     delete_mutex(&state_mutex);
     free(qr_state);
 
-    return osOK;
+    return 0; // osOk
 }

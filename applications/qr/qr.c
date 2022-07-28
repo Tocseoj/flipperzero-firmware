@@ -6,7 +6,6 @@
 
 // Gets version number as int from a side length e.g. 21 => 1
 #define QR_VERSION_FOR_SIZE(n)  (((n) - 17) / 4)
-#define QR_VERSION_TYPE_COUNT 11
 typedef enum {
     QrVersionUnknown, // library calculates smallest version on create 
     QrVersion1, // 21x21 code, 3x3 resolution
@@ -31,7 +30,6 @@ typedef enum {
 	QrModeECI         = 0x7, // Extended Channel Interpretation
 } QrMode;
 
-#define QR_ERROR_TYPE_COUNT 4
 // Error correction level
 typedef enum {
     QrEccAuto = -1, // library sets to highest level possible after minimizing version
@@ -41,7 +39,6 @@ typedef enum {
     QrEccHigh, // ~30% erroneous
 } QrEcc;
 
-#define QR_MASK_TYPE_COUNT 8
 typedef enum {
 	QrMaskAuto = -1, // automatically select an optimal mask pattern
 	QrMask0,
@@ -54,7 +51,6 @@ typedef enum {
 	QrMask7,
 } QrMask;
 
-#define QR_EDITING_PARAM_COUNT 3
 typedef enum {
     QrParamCounter,
     QrParamEcc,
@@ -67,7 +63,6 @@ typedef struct {
 } QrEvent;
 
 #define QR_MAX_DATA_LEN 468 // Version 11, level L, AlphaNum mode
-#define QR_MAX_COUNTER 999999
 
 typedef struct {
     char prefix[4]; // prefix of encoded value (TODO: currently a constant)
@@ -81,19 +76,63 @@ typedef struct {
 
 
 static void qr_select_previous_parameter(QrState* qr_state) {
-    qr_state->selected = QrParamCounter;
+    switch (qr_state->selected)
+    {
+    case QrParamCounter:
+        qr_state->selected = QrParamMask;
+        break;
+    case QrParamEcc:
+        qr_state->selected = QrParamCounter;
+        break;
+    case QrParamMask:
+        qr_state->selected = QrParamEcc;
+        break;
+    }
 }
 
 static void qr_select_next_parameter(QrState* qr_state) {
-    qr_state->selected = QrParamMask;
+    switch (qr_state->selected)
+    {
+    case QrParamCounter:
+        qr_state->selected = QrParamEcc;
+        break;
+    case QrParamEcc:
+        qr_state->selected = QrParamMask;
+        break;
+    case QrParamMask:
+        qr_state->selected = QrParamCounter;
+        break;
+    }
 }
 
 static void qr_decrease_selected_parameter(QrState* qr_state) {
-    qr_state->counter--;
+    switch (qr_state->selected)
+    {
+    case QrParamCounter:
+        qr_state->counter--;
+        break;
+    case QrParamEcc:
+        qr_state->ecc == QrEccAuto ? (qr_state->ecc = QrEccHigh) : (qr_state->ecc--);
+        break;
+    case QrParamMask:
+        qr_state->mask == QrMaskAuto ? (qr_state->mask = QrMask7) : (qr_state->mask--);
+        break;
+    }
 }
 
 static void qr_increase_selected_parameter(QrState* qr_state) {
-    qr_state->counter++;
+    switch (qr_state->selected)
+    {
+    case QrParamCounter:
+        qr_state->counter++;
+        break;
+    case QrParamEcc:
+        qr_state->ecc == QrEccHigh ? (qr_state->ecc = QrEccAuto) : (qr_state->ecc++);
+        break;
+    case QrParamMask:
+        qr_state->mask == QrMask7 ? (qr_state->mask = QrMaskAuto) : (qr_state->mask++);
+        break;
+    }
 }
 
 
@@ -106,33 +145,7 @@ static void qr_increase_selected_parameter(QrState* qr_state) {
  * @param offset_y
  * @param resolution 1, 2, or 3. Zero (0) if you just want the maximum
  */
-static void qr_draw_grid(Canvas* const canvas, u_int8_t* const pixels, uint8_t offset_x, uint8_t offset_y, uint8_t resolution) {
-    uint8_t size = qrcodegen_getSize(pixels);
-    QrVersion version = QR_VERSION_FOR_SIZE(size); // Version is auto calculated by library
-
-    if (resolution > 0 && resolution < 4) {
-        // Skip: the resolution was set manually
-    } else if(version == QrVersion1) {
-        resolution = 3;
-    } else if (version == QrVersion2 || version == QrVersion3) {
-        resolution = 2;
-    } else {
-        resolution = 1;
-    }
-
-    // Setup display for the qr code
-    canvas_set_color(canvas, ColorWhite);
-    canvas_draw_box(canvas, offset_x, offset_y, size, size);
-    canvas_set_color(canvas, ColorBlack);
-    // Loop for drawing the grid
-    for (uint8_t y = 0; y < size; y++) {
-        for (uint8_t x = 0; x < size; x++) {
-            if(qrcodegen_getModule(pixels, x, y)) {
-                canvas_draw_box(canvas, x*resolution + offset_x, y*resolution + offset_y, resolution, resolution);
-            }
-        }
-    }
-}
+// static void qr_draw_grid(Canvas* const canvas, u_int8_t* const pixels, uint8_t offset_x, uint8_t offset_y, uint8_t resolution) {
 
 /**
  * @brief Updates what is drawn to display when view_port_update is called
@@ -175,19 +188,59 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     snprintf(buffer, sizeof(buffer), "%08d", (int)qr_state->mask);
     canvas_draw_str_aligned(canvas, 128, 54, AlignRight, AlignTop, buffer);
 
-    // Text data to qr using nayuki/QR-Code-generator 
-    uint8_t tempBuffer[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
+    // See nayuki/QR-Code-generator on github
+    /*
+    uint8_t temp_buffer[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
     uint8_t pixels[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
-    bool autoIncreaseErrorLevel = qr_state->ecc == QrEccAuto;
-    QrEcc specifiedErrorLevel = autoIncreaseErrorLevel ? QrEccLow : qr_state->ecc;
-    FURI_LOG_D("QrCodeDisplayer", "%d %p %p\r\n", (int)specifiedErrorLevel, tempBuffer, pixels);
-    bool ok = qrcodegen_encodeText(encoded_value, 
-        tempBuffer, pixels, (enum qrcodegen_Ecc)specifiedErrorLevel,
-        QrVersion1, QrVersion11, (enum qrcodegen_Mask)qr_state->mask, autoIncreaseErrorLevel);
+    bool auto_increase_error_level = qr_state->ecc == QrEccAuto;
+    QrEcc specified_error_level = auto_increase_error_level ? QrEccLow : qr_state->ecc;
     
+    bool ok = qrcodegen_encodeText(encoded_value, 
+        temp_buffer, pixels, (enum qrcodegen_Ecc)specified_error_level,
+        QrVersion1, QrVersion11, (enum qrcodegen_Mask)qr_state->mask, auto_increase_error_level);
+    */
+    bool ok = true;
     if(ok) {
         // Draw QR Code
-        qr_draw_grid(canvas, pixels, 0, 0, 0);
+        /*
+        uint8_t size = qrcodegen_getSize(pixels);
+        QrVersion version = QR_VERSION_FOR_SIZE(size); // Version is auto calculated by library
+
+        uint8_t resolution;
+        if(version == QrVersion1) {
+            resolution = 3;
+        } else if (version == QrVersion2 || version == QrVersion3) {
+            resolution = 2;
+        } else {
+            resolution = 1;
+        }
+
+        // Setup display for the qr code
+        uint8_t offset_x = 0;
+        uint8_t offset_y = 0;
+        canvas_set_color(canvas, ColorWhite);
+        canvas_draw_box(canvas, offset_x, offset_y, size, size);
+        canvas_set_color(canvas, ColorBlack);
+        // Loop for drawing the grid
+        for (uint8_t y = 0; y < size; y++) {
+            for (uint8_t x = 0; x < size; x++) {
+                if(qrcodegen_getModule(pixels, x, y)) {
+                    canvas_draw_box(canvas, x*resolution + offset_x, y*resolution + offset_y, resolution, resolution);
+                }
+            }
+        }
+        */
+        uint8_t size = 60;
+        uint8_t resolution = 1;
+        uint8_t offset_x = 2;
+        uint8_t offset_y = 2;
+        for (uint8_t y = 0; y < size; y++) {
+            for (uint8_t x = 0; x < size; x++) {
+                if(x+y*2%2) {
+                    canvas_draw_box(canvas, x*resolution + offset_x, y*resolution + offset_y, resolution, resolution);
+                }
+            }
+        }
     } else {
         canvas_set_color(canvas, ColorWhite);
         canvas_draw_box(canvas, 0, 0, 64, 64);
@@ -259,15 +312,11 @@ int32_t qr_code_displayer(void* p) {
         // Can't use osWaitForever here or it can freeze the entire device
         osStatus_t event_status = osMessageQueueGet(event_queue, &event, NULL, 100);
 
-        if(event_status == osOK) {
-            if(event.key == InputKeyBack) {
-                // Quit if back is pressed
-                // TODO: remember last value displayed
-                processing = false;
-            } else if (event.type == InputTypePress) {
-                // get state mutex here
-                QrState* qr_state = (QrState*)acquire_mutex_block(&state_mutex);
+        // get state mutex here
+        QrState* qr_state = (QrState*)acquire_mutex_block(&state_mutex);
 
+        if(event_status == osOK) {
+            if (event.type == InputTypePress) {
                 switch (event.key)
                 {
                 case InputKeyLeft:
@@ -286,23 +335,16 @@ int32_t qr_code_displayer(void* p) {
                     // TODO: allow saving the encoded value (this would open a menu)
                     break;
                 case InputKeyBack:
-                    // TODO: Currently unreachable, but once we incoraporate menus will need ot refactor
+                    processing = false;
                     break;
                 }
-
-                // release state mutex
-                release_mutex(&state_mutex, qr_state);
-
-                // Redraw since state could have changed
-                view_port_update(view_port);
             }
-        } else if (event_status == osErrorTimeout) {
-            // Don't really care if we timeout
-            // TODO: Learn if we lose the event here or it just gets delayed
         } else {
-            FURI_LOG_E("QrCodeDisplayer", "got osError(%d) from osMessageQueueGet\r\n", event_status);
-            processing = false;
+            // event timeout
         }
+
+        view_port_update(view_port);
+        release_mutex(&state_mutex, qr_state);
     }
 
     view_port_enabled_set(view_port, false);

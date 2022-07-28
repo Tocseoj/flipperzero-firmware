@@ -57,9 +57,15 @@ typedef enum {
     QrParamMask,
 } QrParam;
 
+typedef enum {
+    QrEventTriggerTimer,
+    QrEventTriggerInput,
+} QrEventTrigger;
+
 typedef struct {
-    InputKey key;
+    QrEventTrigger trigger;
     InputType type;
+    InputKey key;
 } QrEvent;
 
 #define QR_MAX_DATA_LEN 468 // Version 11, level L, AlphaNum mode
@@ -72,6 +78,15 @@ typedef struct {
     uint32_t counter; // integer part of encoded value
     QrEcc ecc; // error correction level
     QrMask mask;
+
+    // Saved drawing variables
+    bool dirty;
+    uint32_t delay; // timestamp of how long since last input
+    uint8_t grid[465]; // bit array of grid
+    uint8_t size; // length of one side of the grid
+    uint8_t resolution; // how many pixels each box is 
+    uint8_t offset_x;
+    uint8_t offset_y;
 } QrState;
 
 
@@ -118,6 +133,7 @@ static void qr_decrease_selected_parameter(QrState* qr_state) {
         qr_state->mask == QrMaskAuto ? (qr_state->mask = QrMask7) : (qr_state->mask--);
         break;
     }
+    qr_state->dirty = true;
 }
 
 static void qr_increase_selected_parameter(QrState* qr_state) {
@@ -133,19 +149,47 @@ static void qr_increase_selected_parameter(QrState* qr_state) {
         qr_state->mask == QrMask7 ? (qr_state->mask = QrMaskAuto) : (qr_state->mask++);
         break;
     }
+    qr_state->dirty = true;
 }
 
+static void qr_calculate_grid(QrState* qr_state) {
+    // this should already be handled however it is important
+    if (!qr_state->dirty) 
+        return;
+    
+    char encoded_value[QR_MAX_DATA_LEN + 1];
+    snprintf(encoded_value, sizeof(encoded_value), "%s%lu", qr_state->prefix, qr_state->counter);
 
-/**
- * @brief Function that draws the boxes to screen for the qr code, can add display options to this later
- * 
- * @param canvas
- * @param pixels array generated from one of qrcodegen_encodeX functions
- * @param offset_x
- * @param offset_y
- * @param resolution 1, 2, or 3. Zero (0) if you just want the maximum
- */
-// static void qr_draw_grid(Canvas* const canvas, u_int8_t* const pixels, uint8_t offset_x, uint8_t offset_y, uint8_t resolution) {
+    // uint8_t temp_buffer[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
+    uint8_t pixels[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
+    // bool auto_increase_error_level = qr_state->ecc == QrEccAuto;
+    // QrEcc specified_error_level = auto_increase_error_level ? QrEccLow : qr_state->ecc;
+    
+    bool ok = false;
+    // bool ok = qrcodegen_encodeText(encoded_value, 
+    //     temp_buffer, pixels, (enum qrcodegen_Ecc)specified_error_level,
+    //     QrVersion1, QrVersion11, (enum qrcodegen_Mask)qr_state->mask, auto_increase_error_level);
+
+    if(ok) {
+        uint8_t size = qrcodegen_getSize(pixels);
+        qr_state->size = size;
+
+        // Loop for drawing the grid
+        for(uint8_t y = 0; y < size; y++) {
+            for(uint8_t x = 0; x < size; x++) {
+                uint8_t index = y*size+x;
+                if(qrcodegen_getModule(pixels, x, y)) {
+                    qr_state->grid[index/8] |= 1 << (index%8);
+                } else {
+                    qr_state->grid[index/8] &= ~(1 << (index%8));
+                }
+            }
+        }
+    } else {
+        qr_state->size = 0;
+    }
+    qr_state->dirty = false;
+}
 
 /**
  * @brief Updates what is drawn to display when view_port_update is called
@@ -179,64 +223,34 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     if(qr_state->selected == QrParamEcc) canvas_set_font(canvas, FontPrimary);
     canvas_draw_str_aligned(canvas, 128, 22, AlignRight, AlignTop, "Level");
     if(qr_state->selected == QrParamEcc) canvas_set_font(canvas, FontSecondary);   
-    snprintf(buffer, sizeof(buffer), "%08d", (int)qr_state->ecc);
+    snprintf(buffer, sizeof(buffer), "%8d", (int)qr_state->ecc);
     canvas_draw_str_aligned(canvas, 128, 32, AlignRight, AlignTop, buffer);
     
     if(qr_state->selected == QrParamMask) canvas_set_font(canvas, FontPrimary);
     canvas_draw_str_aligned(canvas, 128, 44, AlignRight, AlignTop, "Mask");
     if(qr_state->selected == QrParamMask) canvas_set_font(canvas, FontSecondary);
-    snprintf(buffer, sizeof(buffer), "%08d", (int)qr_state->mask);
+    snprintf(buffer, sizeof(buffer), "%8d", (int)qr_state->mask);
     canvas_draw_str_aligned(canvas, 128, 54, AlignRight, AlignTop, buffer);
 
-    // See nayuki/QR-Code-generator on github
-    /*
-    uint8_t temp_buffer[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
-    uint8_t pixels[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
-    bool auto_increase_error_level = qr_state->ecc == QrEccAuto;
-    QrEcc specified_error_level = auto_increase_error_level ? QrEccLow : qr_state->ecc;
-    
-    bool ok = qrcodegen_encodeText(encoded_value, 
-        temp_buffer, pixels, (enum qrcodegen_Ecc)specified_error_level,
-        QrVersion1, QrVersion11, (enum qrcodegen_Mask)qr_state->mask, auto_increase_error_level);
-    */
-    bool ok = true;
-    if(ok) {
-        // Draw QR Code
-        /*
-        uint8_t size = qrcodegen_getSize(pixels);
-        QrVersion version = QR_VERSION_FOR_SIZE(size); // Version is auto calculated by library
-
-        uint8_t resolution;
-        if(version == QrVersion1) {
-            resolution = 3;
-        } else if (version == QrVersion2 || version == QrVersion3) {
-            resolution = 2;
-        } else {
-            resolution = 1;
-        }
-
-        // Setup display for the qr code
-        uint8_t offset_x = 0;
-        uint8_t offset_y = 0;
+    // Draw QR Code
+    if(qr_state->dirty) {
         canvas_set_color(canvas, ColorWhite);
-        canvas_draw_box(canvas, offset_x, offset_y, size, size);
+        canvas_draw_box(canvas, 0, 0, 64, 64);
         canvas_set_color(canvas, ColorBlack);
-        // Loop for drawing the grid
-        for (uint8_t y = 0; y < size; y++) {
-            for (uint8_t x = 0; x < size; x++) {
-                if(qrcodegen_getModule(pixels, x, y)) {
-                    canvas_draw_box(canvas, x*resolution + offset_x, y*resolution + offset_y, resolution, resolution);
-                }
-            }
-        }
-        */
-        uint8_t size = 60;
-        uint8_t resolution = 1;
-        uint8_t offset_x = 2;
-        uint8_t offset_y = 2;
-        for (uint8_t y = 0; y < size; y++) {
-            for (uint8_t x = 0; x < size; x++) {
-                if(x+y*2%2) {
+        canvas_draw_rframe(canvas, 0, 0, 64, 64, 4);
+        canvas_draw_rframe(canvas, 4, 4, 56, 56, 8);
+        canvas_draw_str_aligned(canvas, 32, 24, AlignCenter, AlignCenter, "Processing...");
+        snprintf(buffer, sizeof(buffer), "%8lu", qr_state->delay);
+        canvas_draw_str_aligned(canvas, 32, 36, AlignCenter, AlignCenter, buffer);
+    } else if(qr_state->size > 0) {
+        uint8_t size = qr_state->size;
+        uint8_t resolution = qr_state->resolution;
+        uint8_t offset_x = qr_state->offset_x;
+        uint8_t offset_y = qr_state->offset_y;
+        for(uint8_t y = 0; y < size; y++) {
+            for(uint8_t x = 0; x < size; x++) {
+                uint8_t index = y*size+x;
+                if(1 << (index%8) & qr_state->grid[index/8]) {
                     canvas_draw_box(canvas, x*resolution + offset_x, y*resolution + offset_y, resolution, resolution);
                 }
             }
@@ -263,9 +277,16 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
 static void qr_input(InputEvent* input_event, osMessageQueueId_t event_queue) {
     furi_assert(event_queue);
 
-    QrEvent qr_event = {.type = input_event->type, .key = input_event->key};
+    QrEvent event = {.trigger = QrEventTriggerInput, .type = input_event->type, .key = input_event->key};
     // TODO: what happens when queue is full (currently fits 8 events)
-    osMessageQueuePut(event_queue, &qr_event, 0, osWaitForever);
+    osMessageQueuePut(event_queue, &event, 0, osWaitForever);
+}
+
+static void qr_timer(osMessageQueueId_t event_queue) {
+    furi_assert(event_queue);
+
+    QrEvent event = {.trigger = QrEventTriggerTimer};
+    osMessageQueuePut(event_queue, &event, 0, 0);
 }
 
 int32_t qr_code_displayer(void* p) {
@@ -288,6 +309,13 @@ int32_t qr_code_displayer(void* p) {
     qr_state->counter = 100609;
     qr_state->ecc = QrEccAuto;
     qr_state->mask = QrMaskAuto;
+    qr_state->size = 0;
+    qr_state->resolution = 3;
+    qr_state->offset_x = 0;
+    qr_state->offset_y = 0;
+    qr_state->dirty = true;
+    qr_state->delay = 0;
+    qr_calculate_grid(qr_state);
     
     // setup mutex for locking state in callbacks
     ValueMutex state_mutex;
@@ -303,6 +331,10 @@ int32_t qr_code_displayer(void* p) {
     view_port_draw_callback_set(view_port, qr_draw, &state_mutex);
     view_port_input_callback_set(view_port, qr_input, event_queue);
 
+    osTimerId_t timer =
+        osTimerNew(qr_timer, osTimerPeriodic, event_queue, NULL);
+    osTimerStart(timer, osKernelGetTickFreq() / 4);
+
     // open GUI and register view_port
     Gui* gui = furi_record_open("gui");
     gui_add_view_port(gui, view_port, GuiLayerFullscreen);
@@ -316,8 +348,16 @@ int32_t qr_code_displayer(void* p) {
         QrState* qr_state = (QrState*)acquire_mutex_block(&state_mutex);
 
         if(event_status == osOK) {
-            if (event.type == InputTypePress) {
-                switch (event.key)
+            if (event.trigger == QrEventTriggerTimer) {
+                if (qr_state->dirty) {
+                    qr_state->delay++;
+                    if(qr_state->delay >= 2) {
+                        qr_calculate_grid(qr_state);
+                    }
+                }
+            } else if (event.trigger == QrEventTriggerInput && event.type == InputTypePress) {
+                qr_state->delay = 0;
+                switch(event.key)
                 {
                 case InputKeyLeft:
                     qr_decrease_selected_parameter(qr_state);
@@ -347,6 +387,7 @@ int32_t qr_code_displayer(void* p) {
         release_mutex(&state_mutex, qr_state);
     }
 
+    osTimerDelete(timer);
     view_port_enabled_set(view_port, false);
     gui_remove_view_port(gui, view_port);
     furi_record_close("gui");

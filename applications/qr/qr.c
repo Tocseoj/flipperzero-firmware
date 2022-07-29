@@ -79,10 +79,11 @@ typedef struct {
     QrEcc ecc; // error correction level
     QrMask mask;
 
+    uint32_t delay; // timestamp of how long since last input
+
     // Saved drawing variables
     bool dirty;
-    uint32_t delay; // timestamp of how long since last input
-    uint8_t grid[465]; // bit array of grid
+    bool grid[61][61]; // array of grid
     uint8_t size; // length of one side of the grid
     uint8_t resolution; // how many pixels each box is 
     uint8_t offset_x;
@@ -154,35 +155,35 @@ static void qr_increase_selected_parameter(QrState* qr_state) {
 
 static void qr_calculate_grid(QrState* qr_state) {
     // this should already be handled however it is important
-    if (!qr_state->dirty) 
+    if(!qr_state->dirty) 
         return;
-    
-    char encoded_value[QR_MAX_DATA_LEN + 1];
-    snprintf(encoded_value, sizeof(encoded_value), "%s%lu", qr_state->prefix, qr_state->counter);
 
-    // uint8_t temp_buffer[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
-    uint8_t pixels[qrcodegen_BUFFER_LEN_FOR_VERSION(11)];
-    // bool auto_increase_error_level = qr_state->ecc == QrEccAuto;
-    // QrEcc specified_error_level = auto_increase_error_level ? QrEccLow : qr_state->ecc;
+    char encoded_value[255];
+    sprintf(encoded_value, "%.3s%06lu", qr_state->prefix, qr_state->counter);
+
+    // QrEcc specified_error_level = qr_state->ecc;
+    // bool auto_increase_error_level = false;
+    // if(specified_error_level == QrEccAuto) {
+    //     specified_error_level = QrEccLow;
+    //     auto_increase_error_level = true;
+    // }
     
-    bool ok = false;
-    // bool ok = qrcodegen_encodeText(encoded_value, 
-    //     temp_buffer, pixels, (enum qrcodegen_Ecc)specified_error_level,
-    //     QrVersion1, QrVersion11, (enum qrcodegen_Mask)qr_state->mask, auto_increase_error_level);
+    uint8_t qr_buffer[qrcodegen_BUFFER_LEN_MAX];
+    uint8_t temp_buffer[qrcodegen_BUFFER_LEN_MAX];
+    bool ok = qrcodegen_encodeText(encoded_value,
+        temp_buffer, qr_buffer, 
+        (enum qrcodegen_Ecc)qr_state->ecc,
+        qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
+        (enum qrcodegen_Mask)qr_state->mask,
+        true);
 
     if(ok) {
-        uint8_t size = qrcodegen_getSize(pixels);
+        uint8_t size = qrcodegen_getSize(qr_buffer);
         qr_state->size = size;
 
-        // Loop for drawing the grid
         for(uint8_t y = 0; y < size; y++) {
             for(uint8_t x = 0; x < size; x++) {
-                uint8_t index = y*size+x;
-                if(qrcodegen_getModule(pixels, x, y)) {
-                    qr_state->grid[index/8] |= 1 << (index%8);
-                } else {
-                    qr_state->grid[index/8] &= ~(1 << (index%8));
-                }
+                qr_state->grid[x][y] = qrcodegen_getModule(qr_buffer, x, y);
             }
         }
     } else {
@@ -210,8 +211,8 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     // get state mutex
     const QrState* qr_state = (QrState*)acquire_mutex_block((ValueMutex*)ctx);
 
-    char encoded_value[QR_MAX_DATA_LEN + 1];
-    snprintf(encoded_value, sizeof(encoded_value), "%s%lu", qr_state->prefix, qr_state->counter);
+    char encoded_value[10];
+    snprintf(encoded_value, 10, "%.3s%06lu", qr_state->prefix, qr_state->counter);
 
     char buffer[9];
     // UI Design
@@ -223,13 +224,13 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
     if(qr_state->selected == QrParamEcc) canvas_set_font(canvas, FontPrimary);
     canvas_draw_str_aligned(canvas, 128, 22, AlignRight, AlignTop, "Level");
     if(qr_state->selected == QrParamEcc) canvas_set_font(canvas, FontSecondary);   
-    snprintf(buffer, sizeof(buffer), "%8d", (int)qr_state->ecc);
+    snprintf(buffer, 9, "%8d", (int)qr_state->ecc);
     canvas_draw_str_aligned(canvas, 128, 32, AlignRight, AlignTop, buffer);
     
     if(qr_state->selected == QrParamMask) canvas_set_font(canvas, FontPrimary);
     canvas_draw_str_aligned(canvas, 128, 44, AlignRight, AlignTop, "Mask");
     if(qr_state->selected == QrParamMask) canvas_set_font(canvas, FontSecondary);
-    snprintf(buffer, sizeof(buffer), "%8d", (int)qr_state->mask);
+    snprintf(buffer, 9, "%8d", (int)qr_state->mask);
     canvas_draw_str_aligned(canvas, 128, 54, AlignRight, AlignTop, buffer);
 
     // Draw QR Code
@@ -240,7 +241,7 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
         canvas_draw_rframe(canvas, 0, 0, 64, 64, 4);
         canvas_draw_rframe(canvas, 4, 4, 56, 56, 8);
         canvas_draw_str_aligned(canvas, 32, 24, AlignCenter, AlignCenter, "Processing...");
-        snprintf(buffer, sizeof(buffer), "%8lu", qr_state->delay);
+        snprintf(buffer, 9, "%8lu", qr_state->delay);
         canvas_draw_str_aligned(canvas, 32, 36, AlignCenter, AlignCenter, buffer);
     } else if(qr_state->size > 0) {
         uint8_t size = qr_state->size;
@@ -249,8 +250,7 @@ static void qr_draw(Canvas* const canvas, void* ctx) {
         uint8_t offset_y = qr_state->offset_y;
         for(uint8_t y = 0; y < size; y++) {
             for(uint8_t x = 0; x < size; x++) {
-                uint8_t index = y*size+x;
-                if(1 << (index%8) & qr_state->grid[index/8]) {
+                if(qr_state->grid[x][y]) {
                     canvas_draw_box(canvas, x*resolution + offset_x, y*resolution + offset_y, resolution, resolution);
                 }
             }
@@ -307,7 +307,7 @@ int32_t qr_code_displayer(void* p) {
     qr_state->selected = QrParamEcc;
     strlcpy(qr_state->prefix, "MIP", 4);
     qr_state->counter = 100609;
-    qr_state->ecc = QrEccAuto;
+    qr_state->ecc = QrEccMedium;
     qr_state->mask = QrMaskAuto;
     qr_state->size = 0;
     qr_state->resolution = 3;
@@ -315,7 +315,7 @@ int32_t qr_code_displayer(void* p) {
     qr_state->offset_y = 0;
     qr_state->dirty = true;
     qr_state->delay = 0;
-    qr_calculate_grid(qr_state);
+    // qr_calculate_grid(qr_state);
     
     // setup mutex for locking state in callbacks
     ValueMutex state_mutex;
